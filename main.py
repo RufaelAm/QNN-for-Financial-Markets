@@ -8,17 +8,34 @@ from qiskit import QuantumCircuit, transpile
 from qiskit.circuit import Parameter
 from qiskit_aer import Aer
 import numpy as np
+from secure_config import config
 
 class QuantumNeuralNetworkTrading(QCAlgorithm):
     def Initialize(self):
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2025, 1, 1)
-        self.SetCash(100000)
-        self.symbol = self.AddEquity("SPY", Resolution.Daily).Symbol
+        # Use secure configuration instead of hardcoded values
+        start_date = config.get('start_date', (2024, 1, 1))
+        end_date = config.get('end_date', (2025, 1, 1))
+        initial_cash = config.get('initial_cash', 100000)
+        target_symbol = config.get('target_symbol', 'SPY')
         
-        # Load trained parameters (θ0 to θ7)
-        self.trained_params = np.array([3.3926, 5.3705, 2.8713, 4.3222, 5.1231, 3.8132, 3.4503, 1.7366])
-        self.num_qubits = 2
+        self.SetStartDate(*start_date)
+        self.SetEndDate(*end_date)
+        self.SetCash(initial_cash)
+        self.symbol = self.AddEquity(target_symbol, Resolution.Daily).Symbol
+        
+        # Load trained parameters securely from file instead of hardcoding
+        self.trained_params = config.load_trained_parameters()
+        if self.trained_params is None:
+            # Fallback to default parameters if file not found
+            self.Debug("Warning: Using default parameters. Please ensure trained_parameters.npy is available.")
+            self.trained_params = np.array([3.3926, 5.3705, 2.8713, 4.3222, 5.1231, 3.8132, 3.4503, 1.7366])
+        
+        self.num_qubits = config.get('num_qubits', 2)
+        
+        # Risk management parameters
+        self.max_position_size = config.get('max_position_size', 1.0)
+        self.stop_loss_pct = config.get('stop_loss_percentage', 0.05)
+        self.take_profit_pct = config.get('take_profit_percentage', 0.10)
         
         # Initialize quantum circuit
         self.circuit, self.params = self._create_circuit()
@@ -53,7 +70,7 @@ class QuantumNeuralNetworkTrading(QCAlgorithm):
         return circuit, params
 
     def Trade(self):
-        """Execute trades based on QNN predictions"""
+        """Execute trades based on QNN predictions with risk management"""
         # Get historical data
         history = self.History(self.symbol, 5, Resolution.Daily)
         if history.empty:
@@ -66,9 +83,28 @@ class QuantumNeuralNetworkTrading(QCAlgorithm):
         # Run QNN inference
         prediction = self.predict(normalized_input)
         
-        # Execute trades
+        # Get current holdings
+        current_holdings = self.Portfolio[self.symbol].Quantity
+        current_price = self.Securities[self.symbol].Price
+        
+        # Risk management: Check for stop loss or take profit
+        if current_holdings != 0:
+            entry_price = self.Portfolio[self.symbol].AveragePrice
+            unrealized_pnl_pct = (current_price - entry_price) / entry_price
+            
+            # Stop loss check
+            if unrealized_pnl_pct < -self.stop_loss_pct:
+                self.Liquidate(self.symbol, "Stop Loss Triggered")
+                return
+            
+            # Take profit check
+            if unrealized_pnl_pct > self.take_profit_pct:
+                self.Liquidate(self.symbol, "Take Profit Triggered")
+                return
+        
+        # Execute trades based on prediction with position sizing
         if prediction == 1:
-            self.SetHoldings(self.symbol, 1.0)  # Buy
+            self.SetHoldings(self.symbol, self.max_position_size)  # Buy with max position size
         else:
             self.Liquidate(self.symbol)  # Sell
 
@@ -77,11 +113,13 @@ class QuantumNeuralNetworkTrading(QCAlgorithm):
         param_values = np.concatenate([x, self.trained_params[self.num_qubits:]])
         param_dict = {p: param_values[i] for i, p in enumerate(self.params)}
         
+        # Use quantum shots from configuration
+        shots = config.get('quantum_shots', 1000)
         bound_qc = self.transpiled_circuit.assign_parameters(param_dict)
-        result = self.simulator.run(bound_qc, shots=1000).result()
+        result = self.simulator.run(bound_qc, shots=shots).result()
         counts = result.get_counts()
         
-        prob_class0 = counts.get('00', 0) / 1000
-        prob_class1 = counts.get('11', 0) / 1000
+        prob_class0 = counts.get('00', 0) / shots
+        prob_class1 = counts.get('11', 0) / shots
         return 0 if prob_class0 > prob_class1 else 1
         

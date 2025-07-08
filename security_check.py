@@ -23,16 +23,22 @@ class SecurityValidator:
             (r'[A-Za-z0-9+/]{40,}', 'Potential encoded secret or hash'),
         ]
         
-        # Files that should not be committed
+        # Files that should not be committed (but templates are okay)
         self.sensitive_files = [
             '.env',
             'config.py',
             'secrets.txt',
             'api_keys.txt',
             'credentials.txt',
-            '*.key',
-            '*.pem',
             'trained_parameters.npy',
+        ]
+        
+        # File extensions that should not be committed
+        self.sensitive_extensions = [
+            '.key',
+            '.pem',
+            '.p12',
+            '.pfx',
         ]
     
     def check_file_content(self, file_path):
@@ -56,9 +62,14 @@ class SecurityValidator:
                                   capture_output=True, text=True, cwd='.')
             tracked_files = result.stdout.strip().split('\n') if result.stdout else []
             
-            for file_pattern in self.sensitive_files:
-                for tracked_file in tracked_files:
-                    if file_pattern.replace('*', '') in tracked_file or tracked_file.endswith(file_pattern.replace('*', '')):
+            for tracked_file in tracked_files:
+                # Check exact file matches
+                if tracked_file in self.sensitive_files:
+                    self.issues.append(f"Sensitive file tracked by git: {tracked_file}")
+                
+                # Check file extensions
+                for ext in self.sensitive_extensions:
+                    if tracked_file.endswith(ext):
                         self.issues.append(f"Sensitive file tracked by git: {tracked_file}")
                         
         except Exception as e:
